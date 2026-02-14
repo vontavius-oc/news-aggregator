@@ -13,6 +13,7 @@ interface NewsItem {
   link: string;
   summary: string;
   contentHtml?: string;
+  cleanedText?: string;
 }
 
 interface WebsiteConfig {
@@ -30,27 +31,54 @@ const BROWSER_HEADERS = {
 };
 
 /**
- * Attempts to fetch the HTML content of a given URL.
- * Uses curl if proxy is provided for better reliability.
+ * Strips bloat from HTML and returns a clean, text-heavy version.
  */
+function cleanNewsHtml(html: string): { cleanedHtml: string, text: string } {
+  const $ = cheerio.load(html);
+
+  // Remove elements that are definitely not part of the core news article
+  $('script, style, noscript, iframe, head, nav, footer, header, aside, .ads, .advertisement, .social-share, .comments').remove();
+
+  // Heuristic: Many news sites wrap content in <article> or specific main roles
+  const article = $('article').first();
+  const target = article.length ? article : $('body');
+
+  // Remove empty tags and common noise after primary filter
+  target.find('div, section').filter(function() {
+    return $(this).text().trim().length === 0;
+  }).remove();
+
+  const cleanedHtml = target.html() || '';
+  const text = target.text().replace(/\s\s+/g, ' ').trim(); // Normalize whitespace
+
+  return { cleanedHtml, text };
+}
+
 async function fetchLinkContent(url: string, proxyUrl?: string): Promise<string | undefined> {
-  if (!url || url.includes('reddit.com/r/')) return undefined; // Skip internal reddit discussion links
+  if (!url || url.includes('reddit.com/r/')) return undefined;
   
   try {
+    let html: string;
     if (proxyUrl) {
       const command = `curl -s -L -x ${proxyUrl} -H "User-Agent: ${USER_AGENT}" --max-time 15 "${url}"`;
       const { stdout } = await execAsync(command);
-      return stdout;
+      html = stdout;
     } else {
       const response = await fetch(url, {
         method: 'GET',
         headers: BROWSER_HEADERS,
         signal: AbortSignal.timeout(15000)
       });
-      if (response.ok) return await response.text();
+      if (!response.ok) return undefined;
+      html = await response.text();
+    }
+
+    if (html) {
+        const { cleanedHtml } = cleanNewsHtml(html);
+        return cleanedHtml.substring(0, 15000); // 15k chars of clean html is plenty
     }
   } catch (err) {
-    // Silent fail, we just won't have content
+    // Fail silently
   }
   return undefined;
 }
@@ -89,13 +117,9 @@ async function scrapeReddit(subreddit: string, proxyUrl?: string): Promise<NewsI
         summary: `Score: ${child.data.ups} | Comments: ${child.data.num_comments} | Author: ${child.data.author}`
     }));
 
-    // For Reddit posts, try to fetch the linked content
     for (const item of items) {
-        console.log(`[Reddit] Attempting to fetch content for: ${item.title.substring(0, 30)}...`);
-        const content = await fetchLinkContent(item.link, proxyUrl);
-        if (content) {
-            item.contentHtml = content.substring(0, 10000); // Store up to 10k chars of HTML
-        }
+        console.log(`[Reddit] Deep scraping: ${item.title.substring(0, 40)}...`);
+        item.contentHtml = await fetchLinkContent(item.link, proxyUrl);
     }
 
     return items;
@@ -190,15 +214,7 @@ async function main() {
   const allNews = results.flat();
 
   console.log(`\n--- TOP STORIES (${allNews.length}) ---\n`);
-  allNews.forEach((news, idx) => {
-    console.log(`${idx + 1}. [${news.source.toUpperCase()}] ${news.title}`);
-    console.log(`   Link: ${news.link}`);
-    if (news.contentHtml) {
-        console.log(`   Content: [Scraped ${news.contentHtml.length} bytes]`);
-    }
-    console.log('');
-  });
-
+  
   // Save to output file
   const outputPath = path.join(process.cwd(), 'output.json');
   await writeFile(outputPath, JSON.stringify(allNews, null, 2));
