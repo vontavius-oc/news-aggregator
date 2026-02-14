@@ -13,7 +13,6 @@ interface NewsItem {
   link: string;
   summary: string;
   contentHtml?: string;
-  cleanedText?: string;
 }
 
 interface WebsiteConfig {
@@ -22,60 +21,90 @@ interface WebsiteConfig {
   type: string;
 }
 
-const USER_AGENT = 'news-aggregator-bot/1.0.0 (by /u/radu2005)';
+const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
-const BROWSER_HEADERS = {
-  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-  "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+const STEALTH_HEADERS = {
+  "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
   "accept-language": "en-US,en;q=0.9,ro;q=0.8",
+  "cache-control": "no-cache",
+  "pragma": "no-cache",
+  "upgrade-insecure-requests": "1",
+  "sec-fetch-dest": "document",
+  "sec-fetch-mode": "navigate",
+  "sec-fetch-site": "none",
+  "sec-fetch-user": "?1"
 };
 
 /**
- * Strips bloat from HTML and returns a clean, text-heavy version.
+ * Strips bloat from HTML and returns a clean, news-focused version.
  */
-function cleanNewsHtml(html: string): { cleanedHtml: string, text: string } {
+function cleanNewsHtml(html: string): string {
   const $ = cheerio.load(html);
 
-  // Remove elements that are definitely not part of the core news article
-  $('script, style, noscript, iframe, head, nav, footer, header, aside, .ads, .advertisement, .social-share, .comments').remove();
+  // Remove common non-content elements
+  $('script, style, noscript, iframe, head, nav, footer, header, aside, svg, canvas, link, meta').remove();
+  $('.ads, .advertisement, .social-share, .comments, .related-posts, .newsletter-signup, .cookie-banner, .post-bottom').remove();
 
-  // Heuristic: Many news sites wrap content in <article> or specific main roles
-  const article = $('article').first();
-  const target = article.length ? article : $('body');
+  // Selection priority for content containers
+  const selectors = [
+    'article',
+    'main',
+    '#article-body',
+    '.article-body',
+    '.article-content',
+    '.entry-content',
+    '.post-content',
+    '.story-content',
+    '.content-area',
+    '.main-content',
+    '.post-content-area'
+  ];
 
-  // Remove empty tags and common noise after primary filter
-  target.find('div, section').filter(function() {
+  let target: cheerio.Cheerio<cheerio.AnyNode> | null = null;
+  for (const selector of selectors) {
+    const el = $(selector);
+    if (el.length && el.text().trim().length > 300) {
+      target = el.first();
+      break;
+    }
+  }
+
+  if (!target) target = $('body');
+
+  // Strip empty internal tags
+  target.find('div, section, span, p').filter(function() {
     return $(this).text().trim().length === 0;
   }).remove();
 
-  const cleanedHtml = target.html() || '';
-  const text = target.text().replace(/\s\s+/g, ' ').trim(); // Normalize whitespace
-
-  return { cleanedHtml, text };
+  return target.html() || '';
 }
 
 async function fetchLinkContent(url: string, proxyUrl?: string): Promise<string | undefined> {
   if (!url || url.includes('reddit.com/r/')) return undefined;
   
   try {
-    let html: string;
+    let html: string = '';
     if (proxyUrl) {
-      const command = `curl -s -L -x ${proxyUrl} -H "User-Agent: ${USER_AGENT}" --max-time 15 "${url}"`;
+      let headerFlags = `-H "User-Agent: ${USER_AGENT}" `;
+      for (const [k, v] of Object.entries(STEALTH_HEADERS)) {
+        headerFlags += `-H "${k}: ${v}" `;
+      }
+      
+      const command = `curl -s -L -x ${proxyUrl} ${headerFlags} --max-time 30 "${url}"`;
       const { stdout } = await execAsync(command);
       html = stdout;
     } else {
       const response = await fetch(url, {
         method: 'GET',
-        headers: BROWSER_HEADERS,
+        headers: { "User-Agent": USER_AGENT, ...STEALTH_HEADERS },
         signal: AbortSignal.timeout(15000)
       });
-      if (!response.ok) return undefined;
-      html = await response.text();
+      if (response.ok) html = await response.text();
     }
 
-    if (html) {
-        const { cleanedHtml } = cleanNewsHtml(html);
-        return cleanedHtml.substring(0, 15000); // 15k chars of clean html is plenty
+    if (html && html.trim().length > 500) {
+        const cleaned = cleanNewsHtml(html);
+        return cleaned.length > 0 ? cleaned.substring(0, 15000) : undefined;
     }
   } catch (err) {
     // Fail silently
@@ -87,7 +116,7 @@ async function fetchHtml(url: string, dispatcher?: ProxyAgent): Promise<string |
   try {
     const response = await fetch(url, {
       method: 'GET',
-      headers: BROWSER_HEADERS,
+      headers: { "User-Agent": USER_AGENT, ...STEALTH_HEADERS },
       // @ts-ignore
       dispatcher,
       signal: AbortSignal.timeout(20000)
@@ -103,7 +132,7 @@ async function fetchHtml(url: string, dispatcher?: ProxyAgent): Promise<string |
 async function scrapeReddit(subreddit: string, proxyUrl?: string): Promise<NewsItem[]> {
   const url = `https://www.reddit.com/r/${subreddit}.json?limit=5`;
   const proxyPart = proxyUrl ? `-x ${proxyUrl}` : '';
-  const command = `curl -s ${proxyPart} -H "User-Agent: ${USER_AGENT}" "${url}"`;
+  const command = `curl -s ${proxyPart} -H "User-Agent: news-aggregator-bot/1.0.0 (by /u/radu2005)" "${url}"`;
   
   try {
     const { stdout } = await execAsync(command);
@@ -120,6 +149,8 @@ async function scrapeReddit(subreddit: string, proxyUrl?: string): Promise<NewsI
     for (const item of items) {
         console.log(`[Reddit] Deep scraping: ${item.title.substring(0, 40)}...`);
         item.contentHtml = await fetchLinkContent(item.link, proxyUrl);
+        // Small sleep to avoid aggressive bot detection on external sites
+        await new Promise(resolve => setTimeout(resolve, 500));
     }
 
     return items;
@@ -215,7 +246,6 @@ async function main() {
 
   console.log(`\n--- TOP STORIES (${allNews.length}) ---\n`);
   
-  // Save to output file
   const outputPath = path.join(process.cwd(), 'output.json');
   await writeFile(outputPath, JSON.stringify(allNews, null, 2));
   console.log(`Results saved to ${outputPath}`);
