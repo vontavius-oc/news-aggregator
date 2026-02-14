@@ -1,5 +1,6 @@
 import * as cheerio from 'cheerio';
 import { ProxyAgent } from 'undici';
+import { gotScraping } from 'got-scraping';
 
 interface NewsItem {
   source: string;
@@ -33,24 +34,46 @@ async function fetchHtml(url: string, dispatcher?: ProxyAgent): Promise<string |
   }
 }
 
-async function scrapeReddit(subreddit: string, dispatcher?: ProxyAgent): Promise<NewsItem[]> {
-  const url = `https://www.reddit.com/r/${subreddit}.json?limit=5`;
+async function scrapeReddit(subreddit: string, proxyUrl?: string): Promise<NewsItem[]> {
+  const url = `https://old.reddit.com/r/${subreddit}`;
+  console.log(`[Reddit] Fetching ${url} via got-scraping...`);
   try {
-    const response = await fetch(url, {
-        method: 'GET',
-        headers: { "User-Agent": "news-aggregator-bot/1.0.0 (by /u/radu2005)" },
-        // @ts-ignore
-        dispatcher
+    const response = await gotScraping.get(url, {
+        proxyUrl,
+        // got-scraping handles headers and fingerprinting automatically
+        timeout: { request: 20000 }
     });
-    if (!response.ok) return [];
-    const data: any = await response.json();
-    return data.data.children.map((child: any) => ({
-        source: `reddit/r/${subreddit}`,
-        title: child.data.title,
-        link: child.data.url,
-        summary: `Score: ${child.data.ups} | Comments: ${child.data.num_comments}`
-    }));
-  } catch {
+
+    if (response.statusCode !== 200) {
+        console.error(`[Reddit] Error: ${response.statusCode} ${response.statusMessage}`);
+        return [];
+    }
+    
+    const $ = cheerio.load(response.body);
+    const items: NewsItem[] = [];
+
+    $('.thing').each((i, el) => {
+      if (i >= 5) return false;
+      const titleEl = $(el).find('a.title');
+      const title = titleEl.text().trim();
+      let link = titleEl.attr('href') || '';
+      if (link.startsWith('/r/')) link = `https://old.reddit.com${link}`;
+      const score = $(el).find('.score.unvoted').text().trim() || '0';
+
+      if (title) {
+        items.push({
+          source: `reddit/r/${subreddit}`,
+          title,
+          link,
+          summary: `Popularity: ${score} upvotes`
+        });
+      }
+    });
+
+    console.log(`[Reddit] Found ${items.length} posts.`);
+    return items;
+  } catch (error: any) {
+    console.error(`[Reddit] Request failed: ${error.message}`);
     return [];
   }
 }
@@ -93,7 +116,6 @@ async function scrapeBuletinDeBucuresti(dispatcher?: ProxyAgent): Promise<NewsIt
   if (!html) return [];
   const $ = cheerio.load(html);
   const items: NewsItem[] = [];
-  // WordPress sites often have headers with links inside main content areas
   $('h1, h2, h3').each((i, el) => {
     const linkEl = $(el).find('a').first();
     const title = linkEl.text().trim();
@@ -115,7 +137,7 @@ async function main() {
   console.log(`Aggregating news... ${proxyUrl ? '(Proxy Active)' : '(Direct)'}`);
 
   const results = await Promise.all([
-    scrapeReddit('programming', dispatcher),
+    scrapeReddit('programming', proxyUrl),
     scrapeDigi24(dispatcher),
     scrapeHotnews(dispatcher),
     scrapeBuletinDeBucuresti(dispatcher)
