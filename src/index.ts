@@ -98,7 +98,7 @@ async function fetchLinkContent(url: string, proxyUrl?: string): Promise<{ html?
 
   // 3. Skip other common non-article sites
   if (url.includes('imgur.com') || url.includes('v.redd.it') || url.includes('youtube.com') || url.includes('youtu.be')) {
-    return { image: url }; // Or just store as a related link/media
+    return { image: url };
   }
   
   try {
@@ -125,8 +125,6 @@ async function fetchLinkContent(url: string, proxyUrl?: string): Promise<{ html?
         const cleaned = cleanNewsHtml(html);
         const textOnly = cheerio.load(cleaned).text().trim();
         
-        // 4. Heuristic: If it's too big but low text density, or just suspicious, discard.
-        // If clean HTML is over 20k but has very little text, it's likely a complex UI fragment, not an article.
         if (cleaned.length > 20000 && textOnly.length < 500) {
             return {};
         }
@@ -187,7 +185,7 @@ async function scrapeReddit(subreddit: string, proxyUrl?: string): Promise<NewsI
   }
 }
 
-async function scrapeDigi24(config: WebsiteConfig, dispatcher?: ProxyAgent): Promise<NewsItem[]> {
+async function scrapeDigi24(config: WebsiteConfig, proxyUrl?: string, dispatcher?: ProxyAgent): Promise<NewsItem[]> {
   const html = await fetchHtml(config.url, dispatcher);
   if (!html) return [];
   const $ = cheerio.load(html);
@@ -198,13 +196,24 @@ async function scrapeDigi24(config: WebsiteConfig, dispatcher?: ProxyAgent): Pro
     const title = titleEl.text().trim();
     let link = titleEl.attr('href') || '';
     if (link && !link.startsWith('http')) link = `https://www.digi24.ro${link}`;
-    const summary = $(el).find('p').first().text().trim();
-    if (title && link) items.push({ source: config.name, title, link, summary: summary || 'Latest update.' });
+    
+    if (title && link) {
+      items.push({ source: config.name, title, link, summary: 'Pending deep scrape...' });
+    }
   });
+
+  for (const item of items) {
+    console.log(`[${config.name}] Deep scraping: ${item.title.substring(0, 40)}...`);
+    const result = await fetchLinkContent(item.link, proxyUrl);
+    item.contentHtml = result.html;
+    item.imageUrl = result.image;
+    await new Promise(resolve => setTimeout(resolve, 500));
+  }
+
   return items;
 }
 
-async function scrapeHotnews(config: WebsiteConfig, dispatcher?: ProxyAgent): Promise<NewsItem[]> {
+async function scrapeHotnews(config: WebsiteConfig, proxyUrl?: string, dispatcher?: ProxyAgent): Promise<NewsItem[]> {
   const html = await fetchHtml(config.url, dispatcher);
   if (!html) return [];
   const $ = cheerio.load(html);
@@ -214,13 +223,24 @@ async function scrapeHotnews(config: WebsiteConfig, dispatcher?: ProxyAgent): Pr
     const titleEl = $(el).find('h2 a, h1 a').first();
     const title = titleEl.text().trim();
     let link = titleEl.attr('href') || '';
-    let summary = $(el).find('p, .article-excerpt, .lead').text().trim();
-    if (title && link) items.push({ source: config.name, title, link, summary: summary.substring(0, 200) || 'News update.' });
+    
+    if (title && link) {
+      items.push({ source: config.name, title, link, summary: 'Pending deep scrape...' });
+    }
   });
+
+  for (const item of items) {
+    console.log(`[${config.name}] Deep scraping: ${item.title.substring(0, 40)}...`);
+    const result = await fetchLinkContent(item.link, proxyUrl);
+    item.contentHtml = result.html;
+    item.imageUrl = result.image;
+    await new Promise(resolve => setTimeout(resolve, 500));
+  }
+
   return items;
 }
 
-async function scrapeBuletin(config: WebsiteConfig, dispatcher?: ProxyAgent): Promise<NewsItem[]> {
+async function scrapeBuletin(config: WebsiteConfig, proxyUrl?: string, dispatcher?: ProxyAgent): Promise<NewsItem[]> {
   const html = await fetchHtml(config.url, dispatcher);
   if (!html) return [];
   const $ = cheerio.load(html);
@@ -230,10 +250,18 @@ async function scrapeBuletin(config: WebsiteConfig, dispatcher?: ProxyAgent): Pr
     const title = linkEl.text().trim();
     const link = linkEl.attr('href') || '';
     if (title && link && link.includes('buletin.de') && items.length < 5) {
-        const summary = $(el).closest('div').find('p').first().text().trim();
-        items.push({ source: config.name, title, link, summary: summary || 'Bucuresti local news.' });
+        items.push({ source: config.name, title, link, summary: 'Pending deep scrape...' });
     }
   });
+
+  for (const item of items) {
+    console.log(`[${config.name}] Deep scraping: ${item.title.substring(0, 40)}...`);
+    const result = await fetchLinkContent(item.link, proxyUrl);
+    item.contentHtml = result.html;
+    item.imageUrl = result.image;
+    await new Promise(resolve => setTimeout(resolve, 500));
+  }
+
   return items;
 }
 
@@ -264,9 +292,9 @@ async function main() {
   });
 
   websites.forEach(site => {
-    if (site.type === 'digi24') tasks.push(scrapeDigi24(site, dispatcher));
-    else if (site.type === 'hotnews') tasks.push(scrapeHotnews(site, dispatcher));
-    else if (site.type === 'buletin') tasks.push(scrapeBuletin(site, dispatcher));
+    if (site.type === 'digi24') tasks.push(scrapeDigi24(site, proxyUrl, dispatcher));
+    else if (site.type === 'hotnews') tasks.push(scrapeHotnews(site, proxyUrl, dispatcher));
+    else if (site.type === 'buletin') tasks.push(scrapeBuletin(site, proxyUrl, dispatcher));
   });
 
   const results = await Promise.all(tasks);
