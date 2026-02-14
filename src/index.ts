@@ -2,7 +2,7 @@ import * as cheerio from 'cheerio';
 import { ProxyAgent } from 'undici';
 import { exec } from 'child_process';
 import { promisify } from 'util';
-import { readFile } from 'fs/promises';
+import { readFile, writeFile } from 'fs/promises';
 import path from 'path';
 
 const execAsync = promisify(exec);
@@ -12,6 +12,7 @@ interface NewsItem {
   title: string;
   link: string;
   summary: string;
+  contentHtml?: string;
 }
 
 interface WebsiteConfig {
@@ -27,6 +28,32 @@ const BROWSER_HEADERS = {
   "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
   "accept-language": "en-US,en;q=0.9,ro;q=0.8",
 };
+
+/**
+ * Attempts to fetch the HTML content of a given URL.
+ * Uses curl if proxy is provided for better reliability.
+ */
+async function fetchLinkContent(url: string, proxyUrl?: string): Promise<string | undefined> {
+  if (!url || url.includes('reddit.com/r/')) return undefined; // Skip internal reddit discussion links
+  
+  try {
+    if (proxyUrl) {
+      const command = `curl -s -L -x ${proxyUrl} -H "User-Agent: ${USER_AGENT}" --max-time 15 "${url}"`;
+      const { stdout } = await execAsync(command);
+      return stdout;
+    } else {
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: BROWSER_HEADERS,
+        signal: AbortSignal.timeout(15000)
+      });
+      if (response.ok) return await response.text();
+    }
+  } catch (err) {
+    // Silent fail, we just won't have content
+  }
+  return undefined;
+}
 
 async function fetchHtml(url: string, dispatcher?: ProxyAgent): Promise<string | null> {
   try {
@@ -55,12 +82,23 @@ async function scrapeReddit(subreddit: string, proxyUrl?: string): Promise<NewsI
     const data = JSON.parse(stdout);
     if (!data.data || !data.data.children) return [];
 
-    return data.data.children.map((child: any) => ({
+    const items: NewsItem[] = data.data.children.map((child: any) => ({
         source: `reddit/r/${subreddit}`,
         title: child.data.title,
         link: child.data.url.startsWith('/') ? `https://reddit.com${child.data.url}` : child.data.url,
         summary: `Score: ${child.data.ups} | Comments: ${child.data.num_comments} | Author: ${child.data.author}`
     }));
+
+    // For Reddit posts, try to fetch the linked content
+    for (const item of items) {
+        console.log(`[Reddit] Attempting to fetch content for: ${item.title.substring(0, 30)}...`);
+        const content = await fetchLinkContent(item.link, proxyUrl);
+        if (content) {
+            item.contentHtml = content.substring(0, 10000); // Store up to 10k chars of HTML
+        }
+    }
+
+    return items;
   } catch {
     return [];
   }
@@ -124,7 +162,6 @@ async function main() {
 
   console.log(`Starting Aggregator... ${proxyUrl ? '(Proxy Active)' : '(Direct Network)'}`);
 
-  // Load Configurations
   const configPath = path.join(process.cwd(), 'config');
   let subreddits: string[] = [];
   let websites: WebsiteConfig[] = [];
@@ -139,17 +176,14 @@ async function main() {
 
   const tasks: Promise<NewsItem[]>[] = [];
 
-  // Queue Subreddits
   subreddits.forEach(sub => {
     tasks.push(scrapeReddit(sub, proxyUrl));
   });
 
-  // Queue Websites based on type
   websites.forEach(site => {
     if (site.type === 'digi24') tasks.push(scrapeDigi24(site, dispatcher));
     else if (site.type === 'hotnews') tasks.push(scrapeHotnews(site, dispatcher));
     else if (site.type === 'buletin') tasks.push(scrapeBuletin(site, dispatcher));
-    else console.warn(`Unknown site type: ${site.type} for ${site.name}`);
   });
 
   const results = await Promise.all(tasks);
@@ -159,8 +193,16 @@ async function main() {
   allNews.forEach((news, idx) => {
     console.log(`${idx + 1}. [${news.source.toUpperCase()}] ${news.title}`);
     console.log(`   Link: ${news.link}`);
-    console.log(`   Summary: ${news.summary}\n`);
+    if (news.contentHtml) {
+        console.log(`   Content: [Scraped ${news.contentHtml.length} bytes]`);
+    }
+    console.log('');
   });
+
+  // Save to output file
+  const outputPath = path.join(process.cwd(), 'output.json');
+  await writeFile(outputPath, JSON.stringify(allNews, null, 2));
+  console.log(`Results saved to ${outputPath}`);
 }
 
 main();
