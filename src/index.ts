@@ -13,6 +13,7 @@ interface NewsItem {
   link: string;
   summary: string;
   contentHtml?: string;
+  imageUrl?: string;
 }
 
 interface WebsiteConfig {
@@ -79,8 +80,26 @@ function cleanNewsHtml(html: string): string {
   return target.html() || '';
 }
 
-async function fetchLinkContent(url: string, proxyUrl?: string): Promise<string | undefined> {
-  if (!url || url.includes('reddit.com/r/')) return undefined;
+/**
+ * Attempts to fetch the HTML content of a given URL.
+ * Uses curl if proxy is provided for better reliability.
+ */
+async function fetchLinkContent(url: string, proxyUrl?: string): Promise<{ html?: string, image?: string }> {
+  // 1. Skip internal Reddit links
+  if (!url || url.includes('reddit.com/r/') || url.includes('old.reddit.com/r/')) {
+    return {};
+  }
+
+  // 2. Detect Image/Gallery links
+  const isImage = /\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(url);
+  if (isImage) {
+    return { image: url };
+  }
+
+  // 3. Skip other common non-article sites
+  if (url.includes('imgur.com') || url.includes('v.redd.it') || url.includes('youtube.com') || url.includes('youtu.be')) {
+    return { image: url }; // Or just store as a related link/media
+  }
   
   try {
     let html: string = '';
@@ -104,12 +123,20 @@ async function fetchLinkContent(url: string, proxyUrl?: string): Promise<string 
 
     if (html && html.trim().length > 500) {
         const cleaned = cleanNewsHtml(html);
-        return cleaned.length > 0 ? cleaned.substring(0, 15000) : undefined;
+        const textOnly = cheerio.load(cleaned).text().trim();
+        
+        // 4. Heuristic: If it's too big but low text density, or just suspicious, discard.
+        // If clean HTML is over 20k but has very little text, it's likely a complex UI fragment, not an article.
+        if (cleaned.length > 20000 && textOnly.length < 500) {
+            return {};
+        }
+
+        return { html: cleaned.length > 0 ? cleaned.substring(0, 15000) : undefined };
     }
   } catch (err) {
     // Fail silently
   }
-  return undefined;
+  return {};
 }
 
 async function fetchHtml(url: string, dispatcher?: ProxyAgent): Promise<string | null> {
@@ -147,9 +174,10 @@ async function scrapeReddit(subreddit: string, proxyUrl?: string): Promise<NewsI
     }));
 
     for (const item of items) {
-        console.log(`[Reddit] Deep scraping: ${item.title.substring(0, 40)}...`);
-        item.contentHtml = await fetchLinkContent(item.link, proxyUrl);
-        // Small sleep to avoid aggressive bot detection on external sites
+        console.log(`[Reddit] Smart scraping: ${item.title.substring(0, 40)}...`);
+        const result = await fetchLinkContent(item.link, proxyUrl);
+        item.contentHtml = result.html;
+        item.imageUrl = result.image;
         await new Promise(resolve => setTimeout(resolve, 500));
     }
 
