@@ -8,10 +8,6 @@ interface RedditPost {
   thumbnail: string | null;
 }
 
-// Your Pi's Tailscale IP and Tinyproxy port
-const PROXY_URL = 'http://100.87.21.53:8888';
-const dispatcher = new ProxyAgent(PROXY_URL);
-
 const HEADERS = {
   "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36 Edg/144.0.0.0",
   "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
@@ -25,18 +21,24 @@ const HEADERS = {
   "sec-fetch-user": "?1"
 };
 
-async function scrapeSubreddit(subreddit: string): Promise<RedditPost[]> {
-  console.log(`Scraping r/${subreddit} via Pi Proxy...`);
+async function scrapeSubreddit(subreddit: string, dispatcher?: ProxyAgent): Promise<RedditPost[]> {
+  const mode = dispatcher ? "via Proxy" : "via System Network";
+  console.log(`Scraping r/${subreddit} ${mode}...`);
+  
   const url = `https://old.reddit.com/r/${subreddit}`;
   
   try {
-    const response = await fetch(url, {
+    const fetchOptions: any = {
       method: 'GET',
       headers: HEADERS,
-      // @ts-ignore - dispatcher is part of the experimental fetch API in Node.js
-      dispatcher,
       signal: AbortSignal.timeout(15000) 
-    });
+    };
+
+    if (dispatcher) {
+      fetchOptions.dispatcher = dispatcher;
+    }
+
+    const response = await fetch(url, fetchOptions);
 
     if (!response.ok) {
       console.error(`HTTP error for ${subreddit}: ${response.status} ${response.statusText}`);
@@ -79,10 +81,25 @@ async function scrapeSubreddit(subreddit: string): Promise<RedditPost[]> {
 }
 
 async function main() {
+  const args = process.argv.slice(2);
+  let proxyUrl: string | undefined;
+
+  const proxyIdx = args.indexOf('--proxy');
+  if (proxyIdx !== -1 && args[proxyIdx + 1]) {
+    proxyUrl = args[proxyIdx + 1];
+  }
+
+  const dispatcher = proxyUrl ? new ProxyAgent(proxyUrl) : undefined;
+  if (proxyUrl) {
+    console.log(`Using Proxy: ${proxyUrl}`);
+  } else {
+    console.log("No proxy specified. Using system network.");
+  }
+
   const subreddits = ['programming', 'technology', 'Romania'];
   
   for (const sub of subreddits) {
-    const posts = await scrapeSubreddit(sub);
+    const posts = await scrapeSubreddit(sub, dispatcher);
     console.log(`Found ${posts.length} posts in r/${sub}`);
     if (posts.length > 0) {
       console.log(`Top post: ${posts[0].title} (${posts[0].upvotes} upvotes)`);
