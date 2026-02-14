@@ -1,6 +1,3 @@
-import axios from 'axios';
-import * as cheerio from 'cheerio';
-
 interface RedditPost {
   title: string;
   link: string;
@@ -8,25 +5,41 @@ interface RedditPost {
   thumbnail: string | null;
 }
 
-const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36 Edg/144.0.0.0';
+// Using the exact headers provided by the user
+const HEADERS = {
+  "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+  "accept-language": "en-US,en;q=0.9",
+  "cache-control": "no-cache",
+  "pragma": "no-cache",
+  "priority": "u=0, i",
+  "sec-ch-ua": "\"Not(A:Brand\";v=\"8\", \"Chromium\";v=\"144\", \"Microsoft Edge\";v=\"144\"",
+  "sec-ch-ua-mobile": "?0",
+  "sec-ch-ua-platform": "\"Windows\"",
+  "sec-fetch-dest": "document",
+  "sec-fetch-mode": "navigate",
+  "sec-fetch-site": "none",
+  "sec-fetch-user": "?1",
+  "upgrade-insecure-requests": "1",
+  "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36 Edg/144.0.0.0"
+};
 
-/**
- * Scrapes the first 25 posts from old.reddit.com for a given subreddit.
- * NOTE: Reddit often blocks automated requests from data center IPs with 403 Forbidden.
- */
+import * as cheerio from 'cheerio';
+
 async function scrapeSubreddit(subreddit: string): Promise<RedditPost[]> {
   console.log(`Scraping r/${subreddit}...`);
-  const url = `https://old.reddit.com/r/${subreddit}`;
+  const url = `https://old.reddit.com/r/${subreddit}/`;
   
   try {
-    const { data } = await axios.get(url, {
-      headers: {
-        'User-Agent': USER_AGENT,
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.5',
-      }
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: HEADERS
     });
 
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
+    const data = await response.text();
     const $ = cheerio.load(data);
     const posts: RedditPost[] = [];
 
@@ -56,14 +69,13 @@ async function scrapeSubreddit(subreddit: string): Promise<RedditPost[]> {
 
     return posts;
   } catch (error) {
-    // Log the message but don't crash
     console.error(`Error scraping ${subreddit}:`, (error as any).message);
     return [];
   }
 }
 
 async function main() {
-  const subreddits = ['programming', 'technology', 'worldnews'];
+  const subreddits = ['programming', 'technology', 'Romania'];
   
   for (const sub of subreddits) {
     const posts = await scrapeSubreddit(sub);
