@@ -2,6 +2,8 @@ import * as cheerio from 'cheerio';
 import { ProxyAgent } from 'undici';
 import { exec } from 'child_process';
 import { promisify } from 'util';
+import { readFile } from 'fs/promises';
+import path from 'path';
 
 const execAsync = promisify(exec);
 
@@ -10,6 +12,12 @@ interface NewsItem {
   title: string;
   link: string;
   summary: string;
+}
+
+interface WebsiteConfig {
+  name: string;
+  url: string;
+  type: string;
 }
 
 const USER_AGENT = 'news-aggregator-bot/1.0.0 (by /u/radu2005)';
@@ -37,10 +45,6 @@ async function fetchHtml(url: string, dispatcher?: ProxyAgent): Promise<string |
   }
 }
 
-/**
- * Reddit has aggressive bot detection for Node.js fetch/axios.
- * We use curl via the proxy as a more robust way to fetch the JSON.
- */
 async function scrapeReddit(subreddit: string, proxyUrl?: string): Promise<NewsItem[]> {
   const url = `https://www.reddit.com/r/${subreddit}.json?limit=5`;
   const proxyPart = proxyUrl ? `-x ${proxyUrl}` : '';
@@ -49,7 +53,6 @@ async function scrapeReddit(subreddit: string, proxyUrl?: string): Promise<NewsI
   try {
     const { stdout } = await execAsync(command);
     const data = JSON.parse(stdout);
-    
     if (!data.data || !data.data.children) return [];
 
     return data.data.children.map((child: any) => ({
@@ -58,14 +61,13 @@ async function scrapeReddit(subreddit: string, proxyUrl?: string): Promise<NewsI
         link: child.data.url.startsWith('/') ? `https://reddit.com${child.data.url}` : child.data.url,
         summary: `Score: ${child.data.ups} | Comments: ${child.data.num_comments} | Author: ${child.data.author}`
     }));
-  } catch (error: any) {
-    console.error(`[Reddit] Fetch via curl failed: ${error.message}`);
+  } catch {
     return [];
   }
 }
 
-async function scrapeDigi24(dispatcher?: ProxyAgent): Promise<NewsItem[]> {
-  const html = await fetchHtml('https://www.digi24.ro/', dispatcher);
+async function scrapeDigi24(config: WebsiteConfig, dispatcher?: ProxyAgent): Promise<NewsItem[]> {
+  const html = await fetchHtml(config.url, dispatcher);
   if (!html) return [];
   const $ = cheerio.load(html);
   const items: NewsItem[] = [];
@@ -76,13 +78,13 @@ async function scrapeDigi24(dispatcher?: ProxyAgent): Promise<NewsItem[]> {
     let link = titleEl.attr('href') || '';
     if (link && !link.startsWith('http')) link = `https://www.digi24.ro${link}`;
     const summary = $(el).find('p').first().text().trim();
-    if (title && link) items.push({ source: 'Digi24', title, link, summary: summary || 'Latest update.' });
+    if (title && link) items.push({ source: config.name, title, link, summary: summary || 'Latest update.' });
   });
   return items;
 }
 
-async function scrapeHotnews(dispatcher?: ProxyAgent): Promise<NewsItem[]> {
-  const html = await fetchHtml('https://hotnews.ro/', dispatcher);
+async function scrapeHotnews(config: WebsiteConfig, dispatcher?: ProxyAgent): Promise<NewsItem[]> {
+  const html = await fetchHtml(config.url, dispatcher);
   if (!html) return [];
   const $ = cheerio.load(html);
   const items: NewsItem[] = [];
@@ -92,13 +94,13 @@ async function scrapeHotnews(dispatcher?: ProxyAgent): Promise<NewsItem[]> {
     const title = titleEl.text().trim();
     let link = titleEl.attr('href') || '';
     let summary = $(el).find('p, .article-excerpt, .lead').text().trim();
-    if (title && link) items.push({ source: 'Hotnews', title, link, summary: summary.substring(0, 200) || 'News update.' });
+    if (title && link) items.push({ source: config.name, title, link, summary: summary.substring(0, 200) || 'News update.' });
   });
   return items;
 }
 
-async function scrapeBuletinDeBucuresti(dispatcher?: ProxyAgent): Promise<NewsItem[]> {
-  const html = await fetchHtml('https://buletin.de/bucuresti/', dispatcher);
+async function scrapeBuletin(config: WebsiteConfig, dispatcher?: ProxyAgent): Promise<NewsItem[]> {
+  const html = await fetchHtml(config.url, dispatcher);
   if (!html) return [];
   const $ = cheerio.load(html);
   const items: NewsItem[] = [];
@@ -108,7 +110,7 @@ async function scrapeBuletinDeBucuresti(dispatcher?: ProxyAgent): Promise<NewsIt
     const link = linkEl.attr('href') || '';
     if (title && link && link.includes('buletin.de') && items.length < 5) {
         const summary = $(el).closest('div').find('p').first().text().trim();
-        items.push({ source: 'Buletin de Bucuresti', title, link, summary: summary || 'Bucuresti local news.' });
+        items.push({ source: config.name, title, link, summary: summary || 'Bucuresti local news.' });
     }
   });
   return items;
@@ -120,24 +122,44 @@ async function main() {
   const proxyUrl = proxyIdx !== -1 ? args[proxyIdx + 1] : undefined;
   const dispatcher = proxyUrl ? new ProxyAgent(proxyUrl) : undefined;
 
-  console.log(`Aggregating news... ${proxyUrl ? '(Proxy Active)' : '(Direct)'}`);
+  console.log(`Starting Aggregator... ${proxyUrl ? '(Proxy Active)' : '(Direct Network)'}`);
 
-  const results = await Promise.all([
-    scrapeReddit('programming', proxyUrl),
-    scrapeReddit('technology', proxyUrl),
-    scrapeDigi24(dispatcher),
-    scrapeHotnews(dispatcher),
-    scrapeBuletinDeBucuresti(dispatcher)
-  ]);
+  // Load Configurations
+  const configPath = path.join(process.cwd(), 'config');
+  let subreddits: string[] = [];
+  let websites: WebsiteConfig[] = [];
 
+  try {
+    subreddits = JSON.parse(await readFile(path.join(configPath, 'subreddits.json'), 'utf-8'));
+    websites = JSON.parse(await readFile(path.join(configPath, 'websites.json'), 'utf-8'));
+  } catch (err: any) {
+    console.error(`Failed to load config files: ${err.message}`);
+    process.exit(1);
+  }
+
+  const tasks: Promise<NewsItem[]>[] = [];
+
+  // Queue Subreddits
+  subreddits.forEach(sub => {
+    tasks.push(scrapeReddit(sub, proxyUrl));
+  });
+
+  // Queue Websites based on type
+  websites.forEach(site => {
+    if (site.type === 'digi24') tasks.push(scrapeDigi24(site, dispatcher));
+    else if (site.type === 'hotnews') tasks.push(scrapeHotnews(site, dispatcher));
+    else if (site.type === 'buletin') tasks.push(scrapeBuletin(site, dispatcher));
+    else console.warn(`Unknown site type: ${site.type} for ${site.name}`);
+  });
+
+  const results = await Promise.all(tasks);
   const allNews = results.flat();
-  console.log(`\nFound ${allNews.length} total stories.\n`);
 
+  console.log(`\n--- TOP STORIES (${allNews.length}) ---\n`);
   allNews.forEach((news, idx) => {
     console.log(`${idx + 1}. [${news.source.toUpperCase()}] ${news.title}`);
     console.log(`   Link: ${news.link}`);
-    console.log(`   Summary: ${news.summary}`);
-    console.log('');
+    console.log(`   Summary: ${news.summary}\n`);
   });
 }
 

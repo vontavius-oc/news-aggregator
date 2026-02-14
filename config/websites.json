@@ -1,0 +1,5 @@
+[
+  { "name": "Digi24", "url": "https://www.digi24.ro/", "type": "digi24" },
+  { "name": "Hotnews", "url": "https://hotnews.ro/", "type": "hotnews" },
+  { "name": "Buletin de Bucuresti", "url": "https://buletin.de/bucuresti/", "type": "buletin" }
+]
