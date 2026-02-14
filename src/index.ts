@@ -1,6 +1,9 @@
 import * as cheerio from 'cheerio';
 import { ProxyAgent } from 'undici';
-import { gotScraping } from 'got-scraping';
+import { exec } from 'child_process';
+import { promisify } from 'util';
+
+const execAsync = promisify(exec);
 
 interface NewsItem {
   source: string;
@@ -9,11 +12,11 @@ interface NewsItem {
   summary: string;
 }
 
-const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36 Edg/144.0.0.0';
+const USER_AGENT = 'news-aggregator-bot/1.0.0 (by /u/radu2005)';
 
-const HEADERS = {
-  "User-Agent": USER_AGENT,
-  "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+const BROWSER_HEADERS = {
+  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+  "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
   "accept-language": "en-US,en;q=0.9,ro;q=0.8",
 };
 
@@ -21,7 +24,7 @@ async function fetchHtml(url: string, dispatcher?: ProxyAgent): Promise<string |
   try {
     const response = await fetch(url, {
       method: 'GET',
-      headers: HEADERS,
+      headers: BROWSER_HEADERS,
       // @ts-ignore
       dispatcher,
       signal: AbortSignal.timeout(20000)
@@ -34,46 +37,29 @@ async function fetchHtml(url: string, dispatcher?: ProxyAgent): Promise<string |
   }
 }
 
+/**
+ * Reddit has aggressive bot detection for Node.js fetch/axios.
+ * We use curl via the proxy as a more robust way to fetch the JSON.
+ */
 async function scrapeReddit(subreddit: string, proxyUrl?: string): Promise<NewsItem[]> {
-  const url = `https://old.reddit.com/r/${subreddit}`;
-  console.log(`[Reddit] Fetching ${url} via got-scraping...`);
+  const url = `https://www.reddit.com/r/${subreddit}.json?limit=5`;
+  const proxyPart = proxyUrl ? `-x ${proxyUrl}` : '';
+  const command = `curl -s ${proxyPart} -H "User-Agent: ${USER_AGENT}" "${url}"`;
+  
   try {
-    const response = await gotScraping.get(url, {
-        proxyUrl,
-        // got-scraping handles headers and fingerprinting automatically
-        timeout: { request: 20000 }
-    });
-
-    if (response.statusCode !== 200) {
-        console.error(`[Reddit] Error: ${response.statusCode} ${response.statusMessage}`);
-        return [];
-    }
+    const { stdout } = await execAsync(command);
+    const data = JSON.parse(stdout);
     
-    const $ = cheerio.load(response.body);
-    const items: NewsItem[] = [];
+    if (!data.data || !data.data.children) return [];
 
-    $('.thing').each((i, el) => {
-      if (i >= 5) return false;
-      const titleEl = $(el).find('a.title');
-      const title = titleEl.text().trim();
-      let link = titleEl.attr('href') || '';
-      if (link.startsWith('/r/')) link = `https://old.reddit.com${link}`;
-      const score = $(el).find('.score.unvoted').text().trim() || '0';
-
-      if (title) {
-        items.push({
-          source: `reddit/r/${subreddit}`,
-          title,
-          link,
-          summary: `Popularity: ${score} upvotes`
-        });
-      }
-    });
-
-    console.log(`[Reddit] Found ${items.length} posts.`);
-    return items;
+    return data.data.children.map((child: any) => ({
+        source: `reddit/r/${subreddit}`,
+        title: child.data.title,
+        link: child.data.url.startsWith('/') ? `https://reddit.com${child.data.url}` : child.data.url,
+        summary: `Score: ${child.data.ups} | Comments: ${child.data.num_comments} | Author: ${child.data.author}`
+    }));
   } catch (error: any) {
-    console.error(`[Reddit] Request failed: ${error.message}`);
+    console.error(`[Reddit] Fetch via curl failed: ${error.message}`);
     return [];
   }
 }
@@ -138,6 +124,7 @@ async function main() {
 
   const results = await Promise.all([
     scrapeReddit('programming', proxyUrl),
+    scrapeReddit('technology', proxyUrl),
     scrapeDigi24(dispatcher),
     scrapeHotnews(dispatcher),
     scrapeBuletinDeBucuresti(dispatcher)
