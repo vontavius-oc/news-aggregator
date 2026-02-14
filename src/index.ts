@@ -1,4 +1,5 @@
 import * as cheerio from 'cheerio';
+import { ProxyAgent } from 'undici';
 
 interface RedditPost {
   title: string;
@@ -7,7 +8,10 @@ interface RedditPost {
   thumbnail: string | null;
 }
 
-// Exact headers provided by you + a standard User-Agent
+// Your Pi's Tailscale IP and Tinyproxy port
+const PROXY_URL = 'http://100.87.21.53:8888';
+const dispatcher = new ProxyAgent(PROXY_URL);
+
 const HEADERS = {
   "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36 Edg/144.0.0.0",
   "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
@@ -22,16 +26,16 @@ const HEADERS = {
 };
 
 async function scrapeSubreddit(subreddit: string): Promise<RedditPost[]> {
-  console.log(`Scraping r/${subreddit}...`);
-  // Try without the trailing slash to be safe
+  console.log(`Scraping r/${subreddit} via Pi Proxy...`);
   const url = `https://old.reddit.com/r/${subreddit}`;
   
   try {
     const response = await fetch(url, {
       method: 'GET',
       headers: HEADERS,
-      // Adding a signal/timeout might help catch silent hangs
-      signal: AbortSignal.timeout(10000) 
+      // @ts-ignore - dispatcher is part of the experimental fetch API in Node.js
+      dispatcher,
+      signal: AbortSignal.timeout(15000) 
     });
 
     if (!response.ok) {
@@ -54,7 +58,6 @@ async function scrapeSubreddit(subreddit: string): Promise<RedditPost[]> {
         link = `https://old.reddit.com${link}`;
       }
 
-      // Upvotes on old.reddit are usually in .score.unvoted or .score.likes
       const upvotes = $(element).find('.score.unvoted').text().trim() || '0';
       
       const thumbImg = $(element).find('a.thumbnail img');
@@ -67,7 +70,6 @@ async function scrapeSubreddit(subreddit: string): Promise<RedditPost[]> {
 
     return posts;
   } catch (error: any) {
-    // If it's a fetch failed error, we want the "cause" to see if it's DNS or SSL
     console.error(`Fetch failed for r/${subreddit}:`, error.message);
     if (error.cause) {
       console.error('Underlying cause:', error.cause);
