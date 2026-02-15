@@ -58,36 +58,50 @@ async function fetchHtml(url: string, userAgent: string, dispatcher?: ProxyAgent
 async function scrapeReddit(subreddit: string, userAgent: string, proxyUrl?: string): Promise<NewsItem[]> {
   const url = `https://www.reddit.com/r/${subreddit}/.rss?limit=25`;
   const proxyPart = proxyUrl ? `-x ${proxyUrl}` : '';
-  const command = `curl -s ${proxyPart} -L -A "${userAgent}" "${url}"`;
+  const command = `curl -s -L ${proxyPart} -A "${userAgent}" "${url}"`;
   
   try {
     const { stdout } = await execAsync(command);
     if (!stdout.trim()) return [];
     
+    if (stdout.includes('<title>Blocked</title>') || stdout.includes('whoa there, pardner!')) {
+        console.warn(`[Reddit] ${subreddit} blocked by network policy.`);
+        return [];
+    }
+
     const items: NewsItem[] = [];
-    const entries = stdout.split('<entry>');
-    
-    for (let i = 1; i < entries.length; i++) {
+    const entryRegex = /<entry>([\s\S]*?)<\/entry>/g;
+    let match;
+
+    while ((match = entryRegex.exec(stdout)) !== null) {
         if (items.length >= 25) break;
-        const entry = entries[i];
+        const entryContent = match[1];
         
-        // Atom RSS titles are usually wrapped like <title>The Title</title>
-        // Links are usually <link href="https://..."/>
-        const titleMatch = entry.match(/<title[^>]*>([\s\S]+?)<\/title>/);
-        const linkMatch = entry.match(/<link[^>]+href="([^"]+)"/);
-        
-        if (titleMatch && linkMatch) {
-            let title = titleMatch[1].trim();
-            // Clean up CDATA if present
-            title = title.replace(/^<!\[CDATA\[/, '').replace(/\]\]>$/, '');
-            // Decode basic entities manually since we're regex parsing
-            title = title.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"');
+        const titleMatch = entryContent.match(/<title[^>]*>([\s\S]+?)<\/title>/);
+        const postLinkMatch = entryContent.match(/<link[^>]+href="([^"]+)"/);
+        const contentMatch = entryContent.match(/<content[^>]*>([\s\S]+?)<\/content>/);
+
+        if (titleMatch && postLinkMatch) {
+            let title = titleMatch[1].trim()
+                .replace(/^<!\[CDATA\[/, '').replace(/\]\]>$/, '')
+                .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"');
+            
+            const postLink = postLinkMatch[1];
+            let articleLink = postLink;
+
+            if (contentMatch) {
+                const contentHtml = contentMatch[1].replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&amp;/g, '&');
+                const linkInContentMatch = contentHtml.match(/<a[^>]+href="([^"]+)"[^>]*>\[link\]<\/a>/);
+                if (linkInContentMatch) {
+                    articleLink = linkInContentMatch[1];
+                }
+            }
 
             items.push({
                 source: `reddit/r/${subreddit}`,
                 title: title,
-                link: linkMatch[1],
-                postLink: linkMatch[1]
+                link: articleLink,
+                postLink: postLink
             });
         }
     }
