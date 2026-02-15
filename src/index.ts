@@ -2,8 +2,9 @@ import * as cheerio from 'cheerio';
 import { ProxyAgent } from 'undici';
 import { exec } from 'child_process';
 import { promisify } from 'util';
-import { readFile, writeFile } from 'fs/promises';
+import { readFile, writeFile, mkdir } from 'fs/promises';
 import path from 'path';
+import { existsSync } from 'fs';
 
 const execAsync = promisify(exec);
 
@@ -13,6 +14,7 @@ interface NewsItem {
   link: string;
   postLink?: string;
   imageUrl?: string;
+  localImage?: string;
 }
 
 interface WebsiteConfig {
@@ -35,6 +37,29 @@ const STEALTH_HEADERS = {
   "sec-fetch-user": "?1"
 };
 
+async function downloadImage(url: string, userAgent: string, subName: string, proxyUrl?: string): Promise<string | undefined> {
+    const imagesDir = path.join(process.cwd(), 'images', subName);
+    if (!existsSync(imagesDir)) {
+        await mkdir(imagesDir, { recursive: true });
+    }
+
+    const filename = path.basename(new URL(url).pathname);
+    const localPath = path.join(imagesDir, filename);
+    const proxyPart = proxyUrl ? `-x ${proxyUrl}` : '';
+    
+    // -H "Accept: image/*" is critical for Reddit image endpoints
+    const command = `curl -s -L ${proxyPart} -A "${userAgent}" -H "Accept: image/*" "${url}" --output "${localPath}"`;
+
+    try {
+        await execAsync(command);
+        console.log(`[Image] Downloaded: ${filename}`);
+        return `images/${subName}/${filename}`;
+    } catch (err: any) {
+        console.error(`[Image] Failed to download ${url}: ${err.message}`);
+        return undefined;
+    }
+}
+
 async function fetchHtml(url: string, userAgent: string, dispatcher?: ProxyAgent): Promise<string | null> {
   try {
     const response = await fetch(url, { 
@@ -55,7 +80,7 @@ async function fetchHtml(url: string, userAgent: string, dispatcher?: ProxyAgent
   }
 }
 
-async function scrapeReddit(subreddit: string, userAgent: string, proxyUrl?: string): Promise<NewsItem[]> {
+async function scrapeReddit(subreddit: string, userAgent: string, shouldDownload: boolean, proxyUrl?: string): Promise<NewsItem[]> {
   const url = `https://www.reddit.com/r/${subreddit}/.rss?limit=25`;
   const proxyPart = proxyUrl ? `-x ${proxyUrl}` : '';
   const command = `curl -s -L ${proxyPart} -A "${userAgent}" "${url}"`;
@@ -88,21 +113,37 @@ async function scrapeReddit(subreddit: string, userAgent: string, proxyUrl?: str
             
             const postLink = postLinkMatch[1];
             let articleLink = postLink;
+            let imageUrl: string | undefined;
 
             if (contentMatch) {
                 const contentHtml = contentMatch[1].replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&amp;/g, '&');
+                
+                // Extract external link
                 const linkInContentMatch = contentHtml.match(/<a[^>]+href="([^"]+)"[^>]*>\[link\]<\/a>/);
                 if (linkInContentMatch) {
                     articleLink = linkInContentMatch[1];
                 }
+
+                // Extract image URL from thumbnail or content
+                const imageMatch = contentHtml.match(/<img[^>]+src="([^"]*(?:i\.redd\.it|preview\.redd\.it)[^"]+)"/);
+                if (imageMatch) {
+                    imageUrl = imageMatch[1].replace(/&amp;/g, '&');
+                }
             }
 
-            items.push({
+            const item: NewsItem = {
                 source: `reddit/r/${subreddit}`,
                 title: title,
                 link: articleLink,
-                postLink: postLink
-            });
+                postLink: postLink,
+                imageUrl: imageUrl
+            };
+
+            if (imageUrl && shouldDownload) {
+                item.localImage = await downloadImage(imageUrl, userAgent, subreddit, proxyUrl);
+            }
+
+            items.push(item);
         }
     }
 
@@ -155,8 +196,10 @@ async function main() {
   const proxyIdx = args.indexOf('--proxy');
   const proxyUrl = proxyIdx !== -1 ? args[proxyIdx + 1] : undefined;
   const dispatcher = proxyUrl ? new ProxyAgent(proxyUrl) : undefined;
+  const shouldDownloadImages = args.includes('--images');
 
   console.log(`Starting Aggregator... ${proxyUrl ? '(Proxy Active)' : '(Direct Network)'}`);
+  if (shouldDownloadImages) console.log("Image downloading enabled.");
 
   const configPath = path.join(process.cwd(), 'config');
   let subreddits: string[] = [];
@@ -178,7 +221,7 @@ async function main() {
   }
 
   const tasks: Promise<NewsItem[]>[] = [];
-  subreddits.forEach(sub => tasks.push(scrapeReddit(sub, userAgent, proxyUrl)));
+  subreddits.forEach(sub => tasks.push(scrapeReddit(sub, userAgent, shouldDownloadImages, proxyUrl)));
 
   websites.forEach(site => {
     let selector = 'h2, h3';
