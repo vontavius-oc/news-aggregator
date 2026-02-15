@@ -56,7 +56,6 @@ async function fetchHtml(url: string, userAgent: string, dispatcher?: ProxyAgent
 }
 
 async function scrapeReddit(subreddit: string, userAgent: string, proxyUrl?: string): Promise<NewsItem[]> {
-  // Reddit's JSON endpoint is heavily restricted. RSS/Atom is more reliable for basic data.
   const url = `https://www.reddit.com/r/${subreddit}/.rss?limit=25`;
   const proxyPart = proxyUrl ? `-x ${proxyUrl}` : '';
   const command = `curl -s ${proxyPart} -L -A "${userAgent}" "${url}"`;
@@ -65,28 +64,33 @@ async function scrapeReddit(subreddit: string, userAgent: string, proxyUrl?: str
     const { stdout } = await execAsync(command);
     if (!stdout.trim()) return [];
     
-    if (!stdout.trim().startsWith('<?xml')) {
-        console.warn(`[Reddit] ${subreddit} blocked or returned unexpected format.`);
-        return [];
-    }
-
-    const $ = cheerio.load(stdout, { xmlMode: true });
     const items: NewsItem[] = [];
+    const entries = stdout.split('<entry>');
+    
+    for (let i = 1; i < entries.length; i++) {
+        if (items.length >= 25) break;
+        const entry = entries[i];
+        
+        // Atom RSS titles are usually wrapped like <title>The Title</title>
+        // Links are usually <link href="https://..."/>
+        const titleMatch = entry.match(/<title[^>]*>([\s\S]+?)<\/title>/);
+        const linkMatch = entry.match(/<link[^>]+href="([^"]+)"/);
+        
+        if (titleMatch && linkMatch) {
+            let title = titleMatch[1].trim();
+            // Clean up CDATA if present
+            title = title.replace(/^<!\[CDATA\[/, '').replace(/\]\]>$/, '');
+            // Decode basic entities manually since we're regex parsing
+            title = title.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"');
 
-    // RSS feed uses <entry> tags. We take the last 25.
-    $('entry').each((i, el) => {
-        if (items.length >= 25) return false;
-        const title = $(el).find('title').text();
-        const link = $(el).find('link[rel="alternate"]').attr('href');
-        if (title && link) {
             items.push({
                 source: `reddit/r/${subreddit}`,
                 title: title,
-                link: link,
-                postLink: link
+                link: linkMatch[1],
+                postLink: linkMatch[1]
             });
         }
-    });
+    }
 
     return items;
   } catch (err: any) { 
@@ -152,7 +156,7 @@ async function main() {
         const uaConfig = JSON.parse(await readFile(path.join(configPath, 'useragent.json'), 'utf-8'));
         if (uaConfig.userAgent) userAgent = uaConfig.userAgent;
     } catch {
-        console.log("Using default User-Agent (useragent.json not found or invalid)");
+        // Fallback
     }
   } catch (err: any) {
     console.error(`Failed to load config files: ${err.message}`);
