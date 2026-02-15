@@ -163,7 +163,7 @@ async function main() {
     else if (type === 'euronews') selector = 'a.the-media-object__link';
     else if (type === 'g4media') selector = '.article__title';
     else if (type === 'axios') selector = 'item';
-    else if (type === 'bbc') selector = '[data-testid="card-headline"]';
+    else if (type === 'bbc') selector = 'h2';
 
     tasks.push(genericScrape(site, selector, dispatcher));
   });
