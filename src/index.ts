@@ -56,12 +56,18 @@ async function fetchHtml(url: string, dispatcher?: ProxyAgent): Promise<string |
 }
 
 async function scrapeReddit(subreddit: string, proxyUrl?: string): Promise<NewsItem[]> {
-  const url = `https://www.reddit.com/r/${subreddit}.json?limit=25`;
+  const url = `https://www.reddit.com/r/${subreddit}/.json?limit=25`;
   const proxyPart = proxyUrl ? `-x ${proxyUrl}` : '';
-  const command = `curl -s ${proxyPart} -H "User-Agent: news-aggregator-bot/1.0.0 (by /u/radu2005)" "${url}"`;
+  // Reddit needs a non-bot user agent and sometimes old.reddit works better for JSON
+  const command = `curl -s ${proxyPart} -L -A "${BROWSER_UA}" "${url}"`;
   
   try {
     const { stdout } = await execAsync(command);
+    // If we get HTML instead of JSON, curl might have been redirected to a login page or CAPTCHA
+    if (stdout.trim().startsWith('<!doctype')) {
+        console.warn(`[Reddit] ${subreddit} returned HTML instead of JSON. Bot detection likely.`);
+        return [];
+    }
     const data = JSON.parse(stdout);
     if (!data.data || !data.data.children) return [];
 
@@ -84,7 +90,10 @@ async function scrapeReddit(subreddit: string, proxyUrl?: string): Promise<NewsI
 
         return item;
     });
-  } catch { return []; }
+  } catch (err: any) { 
+    console.error(`[Reddit] ${subreddit} failed: ${err.message}`);
+    return []; 
+  }
 }
 
 async function genericScrape(config: WebsiteConfig, selector: string, dispatcher?: ProxyAgent): Promise<NewsItem[]> {
