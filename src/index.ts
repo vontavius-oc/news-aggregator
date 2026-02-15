@@ -21,7 +21,7 @@ interface WebsiteConfig {
   type: string;
 }
 
-const BROWSER_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+const DEFAULT_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
 const STEALTH_HEADERS = {
   "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
@@ -35,11 +35,11 @@ const STEALTH_HEADERS = {
   "sec-fetch-user": "?1"
 };
 
-async function fetchHtml(url: string, dispatcher?: ProxyAgent): Promise<string | null> {
+async function fetchHtml(url: string, userAgent: string, dispatcher?: ProxyAgent): Promise<string | null> {
   try {
     const response = await fetch(url, { 
       method: 'GET', 
-      headers: { "User-Agent": BROWSER_UA, ...STEALTH_HEADERS },
+      headers: { "User-Agent": userAgent, ...STEALTH_HEADERS },
       // @ts-ignore
       dispatcher, 
       signal: AbortSignal.timeout(20000) 
@@ -55,18 +55,15 @@ async function fetchHtml(url: string, dispatcher?: ProxyAgent): Promise<string |
   }
 }
 
-async function scrapeReddit(subreddit: string, proxyUrl?: string): Promise<NewsItem[]> {
-  // Using old.reddit.com often bypasses the "New Reddit" bot detection
-  // Also using a very generic User-Agent that doesn't trigger the "bot" filter as easily
-  const url = `https://old.reddit.com/r/${subreddit}/.json?limit=25`;
+async function scrapeReddit(subreddit: string, userAgent: string, proxyUrl?: string): Promise<NewsItem[]> {
+  const url = `https://www.reddit.com/r/${subreddit}/.json?limit=25`;
   const proxyPart = proxyUrl ? `-x ${proxyUrl}` : '';
-  const command = `curl -s ${proxyPart} -L -A "Mozilla/5.0" "${url}"`;
+  const command = `curl -s ${proxyPart} -L -A "${userAgent}" "${url}"`;
   
   try {
     const { stdout } = await execAsync(command);
     if (!stdout.trim()) return [];
     
-    // Check if we got HTML instead of JSON
     if (stdout.trim().startsWith('<!doctype') || stdout.trim().startsWith('<body')) {
         console.warn(`[Reddit] ${subreddit} blocked (HTML returned).`);
         return [];
@@ -98,8 +95,8 @@ async function scrapeReddit(subreddit: string, proxyUrl?: string): Promise<NewsI
   }
 }
 
-async function genericScrape(config: WebsiteConfig, selector: string, dispatcher?: ProxyAgent): Promise<NewsItem[]> {
-  const html = await fetchHtml(config.url, dispatcher);
+async function genericScrape(config: WebsiteConfig, selector: string, userAgent: string, dispatcher?: ProxyAgent): Promise<NewsItem[]> {
+  const html = await fetchHtml(config.url, userAgent, dispatcher);
   if (!html) return [];
   const $ = cheerio.load(html, { xmlMode: config.type === 'axios' });
   const items: NewsItem[] = [];
@@ -146,17 +143,24 @@ async function main() {
   const configPath = path.join(process.cwd(), 'config');
   let subreddits: string[] = [];
   let websites: WebsiteConfig[] = [];
+  let userAgent = DEFAULT_UA;
 
   try {
     subreddits = JSON.parse(await readFile(path.join(configPath, 'subreddits.json'), 'utf-8'));
     websites = JSON.parse(await readFile(path.join(configPath, 'websites.json'), 'utf-8'));
+    try {
+        const uaConfig = JSON.parse(await readFile(path.join(configPath, 'useragent.json'), 'utf-8'));
+        if (uaConfig.userAgent) userAgent = uaConfig.userAgent;
+    } catch {
+        console.log("Using default User-Agent (useragent.json not found or invalid)");
+    }
   } catch (err: any) {
     console.error(`Failed to load config files: ${err.message}`);
     process.exit(1);
   }
 
   const tasks: Promise<NewsItem[]>[] = [];
-  subreddits.forEach(sub => tasks.push(scrapeReddit(sub, proxyUrl)));
+  subreddits.forEach(sub => tasks.push(scrapeReddit(sub, userAgent, proxyUrl)));
 
   websites.forEach(site => {
     let selector = 'h2, h3';
@@ -174,7 +178,7 @@ async function main() {
     else if (type === 'axios') selector = 'item';
     else if (type === 'bbc') selector = 'h2, a[href*="/news/articles/"]';
 
-    tasks.push(genericScrape(site, selector, dispatcher));
+    tasks.push(genericScrape(site, selector, userAgent, dispatcher));
   });
 
   const results = await Promise.all(tasks);

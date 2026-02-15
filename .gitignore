@@ -1,4 +1,5 @@
 node_modules/
 dist/
 output.json
-config/*.json
+config/subreddits.json
+config/useragent.json
