@@ -11,7 +11,6 @@ interface NewsItem {
   source: string;
   title: string;
   link: string;
-  summary: string;
   postLink?: string;
   imageUrl?: string;
 }
@@ -57,7 +56,7 @@ async function fetchHtml(url: string, dispatcher?: ProxyAgent): Promise<string |
 }
 
 async function scrapeReddit(subreddit: string, proxyUrl?: string): Promise<NewsItem[]> {
-  const url = `https://www.reddit.com/r/${subreddit}.json?limit=5`;
+  const url = `https://www.reddit.com/r/${subreddit}.json?limit=25`;
   const proxyPart = proxyUrl ? `-x ${proxyUrl}` : '';
   const command = `curl -s ${proxyPart} -H "User-Agent: news-aggregator-bot/1.0.0 (by /u/radu2005)" "${url}"`;
   
@@ -72,8 +71,7 @@ async function scrapeReddit(subreddit: string, proxyUrl?: string): Promise<NewsI
             source: `reddit/r/${subreddit}`,
             title: post.title,
             link: post.url.startsWith('/') ? `https://reddit.com${post.url}` : post.url,
-            postLink: `https://reddit.com${post.permalink}`,
-            summary: `Score: ${post.ups} | Author: ${post.author}`
+            postLink: `https://reddit.com${post.permalink}`
         };
 
         // If it's an image post or has a preview
@@ -115,7 +113,7 @@ async function genericScrape(config: WebsiteConfig, selector: string, dispatcher
         link = `${base.protocol}//${base.host}${link}`;
     }
     if (title.length > 10 && link) {
-      items.push({ source: config.name, title, link, summary: '' });
+      items.push({ source: config.name, title, link });
     }
   });
 
