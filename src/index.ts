@@ -56,18 +56,22 @@ async function fetchHtml(url: string, dispatcher?: ProxyAgent): Promise<string |
 }
 
 async function scrapeReddit(subreddit: string, proxyUrl?: string): Promise<NewsItem[]> {
-  const url = `https://www.reddit.com/r/${subreddit}/.json?limit=25`;
+  // Using old.reddit.com often bypasses the "New Reddit" bot detection
+  // Also using a very generic User-Agent that doesn't trigger the "bot" filter as easily
+  const url = `https://old.reddit.com/r/${subreddit}/.json?limit=25`;
   const proxyPart = proxyUrl ? `-x ${proxyUrl}` : '';
-  // Reddit needs a non-bot user agent and sometimes old.reddit works better for JSON
-  const command = `curl -s ${proxyPart} -L -A "${BROWSER_UA}" "${url}"`;
+  const command = `curl -s ${proxyPart} -L -A "Mozilla/5.0" "${url}"`;
   
   try {
     const { stdout } = await execAsync(command);
-    // If we get HTML instead of JSON, curl might have been redirected to a login page or CAPTCHA
-    if (stdout.trim().startsWith('<!doctype')) {
-        console.warn(`[Reddit] ${subreddit} returned HTML instead of JSON. Bot detection likely.`);
+    if (!stdout.trim()) return [];
+    
+    // Check if we got HTML instead of JSON
+    if (stdout.trim().startsWith('<!doctype') || stdout.trim().startsWith('<body')) {
+        console.warn(`[Reddit] ${subreddit} blocked (HTML returned).`);
         return [];
     }
+
     const data = JSON.parse(stdout);
     if (!data.data || !data.data.children) return [];
 
@@ -80,11 +84,9 @@ async function scrapeReddit(subreddit: string, proxyUrl?: string): Promise<NewsI
             postLink: `https://reddit.com${post.permalink}`
         };
 
-        // If it's an image post or has a preview
         if (post.post_hint === 'image' || post.url.match(/\.(jpg|jpeg|png|gif|webp)$/i)) {
             item.imageUrl = post.url;
         } else if (post.preview?.images?.[0]?.source?.url) {
-            // Unescape XML entities in Reddit preview URLs
             item.imageUrl = post.preview.images[0].source.url.replace(/&amp;/g, '&');
         }
 
