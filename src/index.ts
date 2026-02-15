@@ -162,8 +162,8 @@ async function main() {
     else if (type === 'cnn') selector = 'a.container__link';
     else if (type === 'euronews') selector = 'a.the-media-object__link';
     else if (type === 'g4media') selector = '.article__title';
-    else if (type === 'reuters') selector = 'h3[data-testid="Heading"]';
     else if (type === 'axios') selector = 'item';
+    else if (type === 'bbc') selector = 'h2[data-testid="card-headline"]';
 
     tasks.push(genericScrape(site, selector, dispatcher));
   });

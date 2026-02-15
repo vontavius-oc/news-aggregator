@@ -8,5 +8,6 @@
   { "name": "CNN", "url": "https://www.cnn.com/", "type": "cnn" },
   { "name": "Euronews", "url": "https://www.euronews.com/", "type": "euronews" },
   { "name": "G4Media", "url": "https://www.g4media.ro/", "type": "g4media" },
-  { "name": "Axios", "url": "https://api.axios.com/feed/", "type": "axios" }
+  { "name": "Axios", "url": "https://api.axios.com/feed/", "type": "axios" },
+  { "name": "BBC", "url": "https://www.bbc.com/", "type": "bbc" }
 ]
