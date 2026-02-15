@@ -5,6 +5,7 @@ import { promisify } from 'util';
 import { readFile, writeFile, mkdir } from 'fs/promises';
 import path from 'path';
 import { existsSync } from 'fs';
+import { Database, Post, Media } from './db.js';
 
 const execAsync = promisify(exec);
 
@@ -78,7 +79,7 @@ async function fetchHtml(url: string, userAgent: string, dispatcher?: ProxyAgent
   }
 }
 
-async function scrapeReddit(subreddit: string, userAgent: string, shouldDownload: boolean, proxyUrl?: string): Promise<NewsItem[]> {
+async function scrapeReddit(subreddit: string, userAgent: string, shouldDownload: boolean, db: Database, proxyUrl?: string): Promise<NewsItem[]> {
   const url = `https://www.reddit.com/r/${subreddit}/.rss?limit=25`;
   const proxyPart = proxyUrl ? `-x ${proxyUrl}` : '';
   const command = `curl -s -L ${proxyPart} -A "${userAgent}" "${url}"`;
@@ -120,7 +121,6 @@ async function scrapeReddit(subreddit: string, userAgent: string, shouldDownload
 
             if (contentMatch) {
                 const contentHtml = contentMatch[1].replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&amp;/g, '&');
-                
                 const linkInContentMatch = contentHtml.match(/<a[^>]+href="([^"]+)"[^>]*>\[link\]<\/a>/);
                 if (linkInContentMatch) {
                     articleLink = linkInContentMatch[1];
@@ -134,7 +134,7 @@ async function scrapeReddit(subreddit: string, userAgent: string, shouldDownload
                 }
             }
 
-            const item: NewsItem = {
+            const newsItem: NewsItem = {
                 source: `reddit/r/${subreddit}`,
                 title: title,
                 link: articleLink,
@@ -142,14 +142,36 @@ async function scrapeReddit(subreddit: string, userAgent: string, shouldDownload
                 imageUrl: imageUrl
             };
 
-            if (imageUrl && shouldDownload) {
-                item.localImage = await downloadImage(imageUrl, userAgent, subreddit, proxyUrl);
+            let postId = await db.insertPost({
+                source: newsItem.source,
+                title: newsItem.title,
+                link: newsItem.link,
+                postLink: newsItem.postLink
+            });
+
+            if (!postId) {
+                postId = await db.getPostIdByLink(newsItem.link);
             }
 
-            items.push(item);
+            if (imageUrl && postId) {
+                let localPath: string | undefined;
+                if (shouldDownload) {
+                    localPath = await downloadImage(imageUrl, userAgent, subreddit, proxyUrl);
+                    newsItem.localImage = localPath;
+                }
+                await db.insertMedia({
+                    postId: postId,
+                    type: 'image',
+                    remoteUrl: imageUrl,
+                    localPath: localPath
+                });
+            }
+
+            items.push(newsItem);
         }
     }
 
+    console.log(`[Reddit] Scraped ${items.length} items from r/${subreddit}`);
     return items;
   } catch (err: any) { 
     console.error(`[Reddit] ${subreddit} failed: ${err.message}`);
@@ -157,11 +179,13 @@ async function scrapeReddit(subreddit: string, userAgent: string, shouldDownload
   }
 }
 
-async function genericScrape(config: WebsiteConfig, selector: string, userAgent: string, dispatcher?: ProxyAgent): Promise<NewsItem[]> {
+async function genericScrape(config: WebsiteConfig, selector: string, userAgent: string, db: Database, dispatcher?: ProxyAgent): Promise<NewsItem[]> {
   const html = await fetchHtml(config.url, userAgent, dispatcher);
   if (!html) return [];
   const $ = cheerio.load(html, { xmlMode: config.type === 'axios' });
   const items: NewsItem[] = [];
+
+  const scrapePromises: Promise<void>[] = [];
 
   $(selector).each((i, el) => {
     if (items.length >= 5) return false;
@@ -182,10 +206,22 @@ async function genericScrape(config: WebsiteConfig, selector: string, userAgent:
         const base = new URL(config.url);
         link = `${base.protocol}//${base.host}${link}`;
     }
+    
     if (title.length > 10 && link) {
-      items.push({ source: config.name, title, link });
+      const item = { source: config.name, title, link };
+      items.push(item);
+      
+      scrapePromises.push((async () => {
+          await db.insertPost({
+              source: item.source,
+              title: item.title,
+              link: item.link
+          });
+      })());
     }
   });
+
+  await Promise.all(scrapePromises);
 
   if (items.length === 0) {
     console.warn(`[${config.name}] No headlines found with selector: ${selector}`);
@@ -200,6 +236,10 @@ async function main() {
   const proxyUrl = proxyIdx !== -1 ? args[proxyIdx + 1] : undefined;
   const dispatcher = proxyUrl ? new ProxyAgent(proxyUrl) : undefined;
   const shouldDownloadImages = args.includes('--images');
+
+  const dbPath = path.join(process.cwd(), 'news.db');
+  const db = new Database(dbPath);
+  await db.init();
 
   console.log(`Starting Aggregator... ${proxyUrl ? '(Proxy Active)' : '(Direct Network)'}`);
   if (shouldDownloadImages) console.log("Image downloading enabled.");
@@ -224,7 +264,7 @@ async function main() {
   }
 
   const tasks: Promise<NewsItem[]>[] = [];
-  subreddits.forEach(sub => tasks.push(scrapeReddit(sub, userAgent, shouldDownloadImages, proxyUrl)));
+  subreddits.forEach(sub => tasks.push(scrapeReddit(sub, userAgent, shouldDownloadImages, db, proxyUrl)));
 
   websites.forEach(site => {
     let selector = 'h2, h3';
@@ -242,7 +282,7 @@ async function main() {
     else if (type === 'axios') selector = 'item';
     else if (type === 'bbc') selector = 'h2, a[href*="/news/articles/"]';
 
-    tasks.push(genericScrape(site, selector, userAgent, dispatcher));
+    tasks.push(genericScrape(site, selector, userAgent, db, dispatcher));
   });
 
   const results = await Promise.all(tasks);
@@ -251,7 +291,9 @@ async function main() {
   console.log(`\n--- TOP STORIES (${allNews.length}) ---\n`);
   const outputPath = path.join(process.cwd(), 'output.json');
   await writeFile(outputPath, JSON.stringify(allNews, null, 2));
-  console.log(`Results saved to ${outputPath}`);
+  console.log(`Results saved to ${outputPath} and SQL database.`);
+  
+  db.close();
 }
 
 main();
