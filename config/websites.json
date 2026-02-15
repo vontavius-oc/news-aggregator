@@ -1,0 +1,13 @@
+[
+  { "name": "Digi24", "url": "https://www.digi24.ro/", "type": "digi24" },
+  { "name": "Hotnews", "url": "https://hotnews.ro/", "type": "hotnews" },
+  { "name": "Buletin de Bucuresti", "url": "https://buletin.de/bucuresti/", "type": "buletin" },
+  { "name": "Profit.ro", "url": "https://www.profit.ro/", "type": "profit" },
+  { "name": "Economedia", "url": "https://www.economedia.ro/", "type": "economedia" },
+  { "name": "Economica", "url": "https://www.economica.net/", "type": "economica" },
+  { "name": "CNN", "url": "https://www.cnn.com/", "type": "cnn" },
+  { "name": "Euronews", "url": "https://www.euronews.com/", "type": "euronews" },
+  { "name": "G4Media", "url": "https://www.g4media.ro/", "type": "g4media" },
+  { "name": "Axios", "url": "https://api.axios.com/feed/", "type": "axios" },
+  { "name": "BBC", "url": "https://www.bbc.com/", "type": "bbc" }
+]
