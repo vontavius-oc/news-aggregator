@@ -12,7 +12,7 @@ interface NewsItem {
   title: string;
   link: string;
   summary: string;
-  contentHtml?: string;
+  postLink?: string;
   imageUrl?: string;
 }
 
@@ -36,70 +36,14 @@ const STEALTH_HEADERS = {
   "sec-fetch-user": "?1"
 };
 
-function cleanNewsHtml(html: string): string {
-  const $ = cheerio.load(html);
-  $('script, style, noscript, iframe, head, nav, footer, header, aside, svg, canvas, link, meta').remove();
-  $('.ads, .advertisement, .social-share, .comments, .related-posts, .newsletter-signup, .cookie-banner, .post-bottom').remove();
-
-  const selectors = [
-    'article', 'main', '#article-body', '.article-body', '.article-content',
-    '.entry-content', '.post-content', '.story-content', '.content-area',
-    '.main-content', '.post-content-area', '.ca-content'
-  ];
-
-  let target: cheerio.Cheerio<cheerio.AnyNode> | null = null;
-  for (const selector of selectors) {
-    const el = $(selector);
-    if (el.length && el.text().trim().length > 300) {
-      target = el.first();
-      break;
-    }
-  }
-
-  if (!target) target = $('body');
-  target.find('div, section, span, p').filter(function() {
-    return $(this).text().trim().length === 0;
-  }).remove();
-
-  return target.html() || '';
-}
-
-async function fetchLinkContent(url: string, proxyUrl?: string): Promise<{ html?: string, image?: string }> {
-  if (!url || url.includes('reddit.com/r/') || url.includes('old.reddit.com/r/')) return {};
-  const isImage = /\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(url);
-  if (isImage) return { image: url };
-  if (url.includes('imgur.com') || url.includes('v.redd.it') || url.includes('youtube.com') || url.includes('youtu.be')) return { image: url };
-  
-  try {
-    let html: string = '';
-    if (proxyUrl) {
-      let headerFlags = `-H "User-Agent: ${BROWSER_UA}" `;
-      for (const [k, v] of Object.entries(STEALTH_HEADERS)) {
-        headerFlags += `-H "${k}: ${v}" `;
-      }
-      const command = `curl -s -L -x ${proxyUrl} ${headerFlags} --max-time 30 "${url}"`;
-      const { stdout } = await execAsync(command);
-      html = stdout;
-    } else {
-      const response = await fetch(url, { method: 'GET', headers: { "User-Agent": BROWSER_UA, ...STEALTH_HEADERS }, signal: AbortSignal.timeout(15000) });
-      if (response.ok) html = await response.text();
-    }
-
-    if (html && html.trim().length > 500) {
-        const cleaned = cleanNewsHtml(html);
-        const textOnly = cheerio.load(cleaned).text().trim();
-        if (cleaned.length > 20000 && textOnly.length < 500) return {};
-        return { html: cleaned.length > 0 ? cleaned.substring(0, 15000) : undefined };
-    }
-  } catch {}
-  return {};
-}
-
 async function fetchHtml(url: string, dispatcher?: ProxyAgent): Promise<string | null> {
   try {
-    const response = await fetch(url, { method: 'GET', headers: { "User-Agent": BROWSER_UA, ...STEALTH_HEADERS },
+    const response = await fetch(url, { 
+      method: 'GET', 
+      headers: { "User-Agent": BROWSER_UA, ...STEALTH_HEADERS },
       // @ts-ignore
-      dispatcher, signal: AbortSignal.timeout(20000)
+      dispatcher, 
+      signal: AbortSignal.timeout(20000) 
     });
     if (!response.ok) {
         console.error(`[Fetch] ${url} failed with status: ${response.status}`);
@@ -122,29 +66,35 @@ async function scrapeReddit(subreddit: string, proxyUrl?: string): Promise<NewsI
     const data = JSON.parse(stdout);
     if (!data.data || !data.data.children) return [];
 
-    const items: NewsItem[] = data.data.children.map((child: any) => ({
-        source: `reddit/r/${subreddit}`,
-        title: child.data.title,
-        link: child.data.url.startsWith('/') ? `https://reddit.com${child.data.url}` : child.data.url,
-        summary: `Score: ${child.data.ups} | Author: ${child.data.author}`
-    }));
+    return data.data.children.map((child: any) => {
+        const post = child.data;
+        const item: NewsItem = {
+            source: `reddit/r/${subreddit}`,
+            title: post.title,
+            link: post.url.startsWith('/') ? `https://reddit.com${post.url}` : post.url,
+            postLink: `https://reddit.com${post.permalink}`,
+            summary: `Score: ${post.ups} | Author: ${post.author}`
+        };
 
-    for (const item of items) {
-        console.log(`[Reddit] Smart scraping: ${item.title.substring(0, 40)}...`);
-        const result = await fetchLinkContent(item.link, proxyUrl);
-        item.contentHtml = result.html;
-        item.imageUrl = result.image;
-        await new Promise(resolve => setTimeout(resolve, 500));
-    }
-    return items;
+        // If it's an image post or has a preview
+        if (post.post_hint === 'image' || post.url.match(/\.(jpg|jpeg|png|gif|webp)$/i)) {
+            item.imageUrl = post.url;
+        } else if (post.preview?.images?.[0]?.source?.url) {
+            // Unescape XML entities in Reddit preview URLs
+            item.imageUrl = post.preview.images[0].source.url.replace(/&amp;/g, '&');
+        }
+
+        return item;
+    });
   } catch { return []; }
 }
 
-async function genericScrape(config: WebsiteConfig, selector: string, dispatcher?: ProxyAgent, proxyUrl?: string): Promise<NewsItem[]> {
+async function genericScrape(config: WebsiteConfig, selector: string, dispatcher?: ProxyAgent): Promise<NewsItem[]> {
   const html = await fetchHtml(config.url, dispatcher);
   if (!html) return [];
   const $ = cheerio.load(html, { xmlMode: config.type === 'axios' });
   const items: NewsItem[] = [];
+
   $(selector).each((i, el) => {
     if (items.length >= 5) return false;
     let title = '';
@@ -165,7 +115,7 @@ async function genericScrape(config: WebsiteConfig, selector: string, dispatcher
         link = `${base.protocol}//${base.host}${link}`;
     }
     if (title.length > 10 && link) {
-      items.push({ source: config.name, title, link, summary: 'Deep scrape pending...' });
+      items.push({ source: config.name, title, link, summary: '' });
     }
   });
 
@@ -173,13 +123,6 @@ async function genericScrape(config: WebsiteConfig, selector: string, dispatcher
     console.warn(`[${config.name}] No headlines found with selector: ${selector}`);
   }
 
-  for (const item of items) {
-    console.log(`[${config.name}] Deep scraping: ${item.title.substring(0, 40)}...`);
-    const result = await fetchLinkContent(item.link, proxyUrl);
-    item.contentHtml = result.html;
-    item.imageUrl = result.image;
-    await new Promise(resolve => setTimeout(resolve, 500));
-  }
   return items;
 }
 
@@ -222,7 +165,7 @@ async function main() {
     else if (type === 'reuters') selector = 'h3[data-testid="Heading"]';
     else if (type === 'axios') selector = 'item';
 
-    tasks.push(genericScrape(site, selector, dispatcher, proxyUrl));
+    tasks.push(genericScrape(site, selector, dispatcher));
   });
 
   const results = await Promise.all(tasks);
