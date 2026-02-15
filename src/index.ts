@@ -163,7 +163,7 @@ async function main() {
     else if (type === 'euronews') selector = 'a.the-media-object__link';
     else if (type === 'g4media') selector = '.article__title';
     else if (type === 'axios') selector = 'item';
-    else if (type === 'bbc') selector = 'h2';
+    else if (type === 'bbc') selector = 'h2, a[href*="/news/articles/"]';
 
     tasks.push(genericScrape(site, selector, dispatcher));
   });
