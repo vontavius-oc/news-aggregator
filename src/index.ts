@@ -56,7 +56,8 @@ async function fetchHtml(url: string, userAgent: string, dispatcher?: ProxyAgent
 }
 
 async function scrapeReddit(subreddit: string, userAgent: string, proxyUrl?: string): Promise<NewsItem[]> {
-  const url = `https://www.reddit.com/r/${subreddit}/.json?limit=25`;
+  // Reddit's JSON endpoint is heavily restricted. RSS/Atom is more reliable for basic data.
+  const url = `https://www.reddit.com/r/${subreddit}/.rss?limit=25`;
   const proxyPart = proxyUrl ? `-x ${proxyUrl}` : '';
   const command = `curl -s ${proxyPart} -L -A "${userAgent}" "${url}"`;
   
@@ -64,31 +65,30 @@ async function scrapeReddit(subreddit: string, userAgent: string, proxyUrl?: str
     const { stdout } = await execAsync(command);
     if (!stdout.trim()) return [];
     
-    if (stdout.trim().startsWith('<!doctype') || stdout.trim().startsWith('<body')) {
-        console.warn(`[Reddit] ${subreddit} blocked (HTML returned).`);
+    if (!stdout.trim().startsWith('<?xml')) {
+        console.warn(`[Reddit] ${subreddit} blocked or returned unexpected format.`);
         return [];
     }
 
-    const data = JSON.parse(stdout);
-    if (!data.data || !data.data.children) return [];
+    const $ = cheerio.load(stdout, { xmlMode: true });
+    const items: NewsItem[] = [];
 
-    return data.data.children.map((child: any) => {
-        const post = child.data;
-        const item: NewsItem = {
-            source: `reddit/r/${subreddit}`,
-            title: post.title,
-            link: post.url.startsWith('/') ? `https://reddit.com${post.url}` : post.url,
-            postLink: `https://reddit.com${post.permalink}`
-        };
-
-        if (post.post_hint === 'image' || post.url.match(/\.(jpg|jpeg|png|gif|webp)$/i)) {
-            item.imageUrl = post.url;
-        } else if (post.preview?.images?.[0]?.source?.url) {
-            item.imageUrl = post.preview.images[0].source.url.replace(/&amp;/g, '&');
+    // RSS feed uses <entry> tags. We take the last 25.
+    $('entry').each((i, el) => {
+        if (items.length >= 25) return false;
+        const title = $(el).find('title').text();
+        const link = $(el).find('link[rel="alternate"]').attr('href');
+        if (title && link) {
+            items.push({
+                source: `reddit/r/${subreddit}`,
+                title: title,
+                link: link,
+                postLink: link
+            });
         }
-
-        return item;
     });
+
+    return items;
   } catch (err: any) { 
     console.error(`[Reddit] ${subreddit} failed: ${err.message}`);
     return []; 
