@@ -47,12 +47,10 @@ async function downloadImage(url: string, userAgent: string, subName: string, pr
     const localPath = path.join(imagesDir, filename);
     const proxyPart = proxyUrl ? `-x ${proxyUrl}` : '';
     
-    // -H "Accept: image/*" is critical for Reddit image endpoints
     const command = `curl -s -L ${proxyPart} -A "${userAgent}" -H "Accept: image/*" "${url}" --output "${localPath}"`;
 
     try {
         await execAsync(command);
-        console.log(`[Image] Downloaded: ${filename}`);
         return `images/${subName}/${filename}`;
     } catch (err: any) {
         console.error(`[Image] Failed to download ${url}: ${err.message}`);
@@ -105,6 +103,7 @@ async function scrapeReddit(subreddit: string, userAgent: string, shouldDownload
         const titleMatch = entryContent.match(/<title[^>]*>([\s\S]+?)<\/title>/);
         const postLinkMatch = entryContent.match(/<link[^>]+href="([^"]+)"/);
         const contentMatch = entryContent.match(/<content[^>]*>([\s\S]+?)<\/content>/);
+        const mediaMatch = entryContent.match(/<media:thumbnail[^>]+url="([^"]+)"/);
 
         if (titleMatch && postLinkMatch) {
             let title = titleMatch[1].trim()
@@ -115,19 +114,23 @@ async function scrapeReddit(subreddit: string, userAgent: string, shouldDownload
             let articleLink = postLink;
             let imageUrl: string | undefined;
 
+            if (mediaMatch) {
+                imageUrl = mediaMatch[1].replace(/&amp;/g, '&');
+            }
+
             if (contentMatch) {
                 const contentHtml = contentMatch[1].replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&amp;/g, '&');
                 
-                // Extract external link
                 const linkInContentMatch = contentHtml.match(/<a[^>]+href="([^"]+)"[^>]*>\[link\]<\/a>/);
                 if (linkInContentMatch) {
                     articleLink = linkInContentMatch[1];
                 }
 
-                // Extract image URL from thumbnail or content
-                const imageMatch = contentHtml.match(/<img[^>]+src="([^"]*(?:i\.redd\.it|preview\.redd\.it)[^"]+)"/);
-                if (imageMatch) {
-                    imageUrl = imageMatch[1].replace(/&amp;/g, '&');
+                if (!imageUrl) {
+                    const imageMatch = contentHtml.match(/<img[^>]+src="([^"]*(?:redd\.it|redditmedia\.com)[^"]+)"/);
+                    if (imageMatch) {
+                        imageUrl = imageMatch[1].replace(/&amp;/g, '&');
+                    }
                 }
             }
 
